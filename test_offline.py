@@ -1,8 +1,10 @@
 """Offline Chromium tests: all browser requests are intercepted, no server login."""
 import os
+import io
+from contextlib import redirect_stdout, redirect_stderr
 import unittest
-from unittest.mock import patch
-from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout
+from unittest.mock import patch, MagicMock
+from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout, Error
 import login_test as app
 
 FORM = '''<form onsubmit="event.preventDefault(); ACTION">
@@ -19,7 +21,7 @@ class OfflineTests(unittest.TestCase):
         cls.browser.close()
         cls.p.stop()
 
-    def run_fixture(self, action, dashboard='<a href="/logout">Logout</a>', initial_status=200):
+    def run_fixture(self, action, dashboard='<div data-testid="authenticated-dashboard">Ready</div>', initial_status=200):
         with self.browser.new_context() as context:
             requests = []
             def route_handler(route):
@@ -28,11 +30,26 @@ class OfflineTests(unittest.TestCase):
                 route.fulfill(status=initial_status if is_login else 200,
                               content_type='text/html', body=FORM.replace('ACTION', action) if is_login else dashboard)
             context.route('**/*', route_handler)
-            app.login(context.new_page(), 'offline-user', 'offline-password', 600, app.DEFAULTS)
+            app.login(context.new_page(), 'offline-user', 'offline-password', 1200, dict(app.DEFAULTS, SUCCESS='[data-testid=authenticated-dashboard]'))
             self.assertTrue(requests)
 
     def test_success_with_alert(self):
-        self.run_fixture("alert('Welcome'); location.href='/dashboard';")
+        self.run_fixture("alert('Welcome'); location.href='/public/dashboard';")
+
+    def test_delayed_authenticated_ui_without_logout(self):
+        self.run_fixture("location.href='/public/dashboard';", "<script>setTimeout(() => {document.body.innerHTML='<div data-testid=authenticated-dashboard>Ready</div>'}, 200)</script>")
+
+    def test_dashboard_reload_during_verification(self):
+        self.run_fixture("location.href='/public/dashboard';", "<script>if(!sessionStorage.reloaded){sessionStorage.reloaded='yes';setTimeout(() => location.reload(), 10)}else{document.write('<div data-testid=authenticated-dashboard>Ready</div>')}</script>")
+
+    def test_duplicate_authenticated_selector_fails_safely(self):
+        with self.assertRaises(app.BrowserFailure) as caught:
+            self.run_fixture("location.href='/public/dashboard';", '<div data-testid=authenticated-dashboard></div><div data-testid=authenticated-dashboard></div>')
+        self.assertEqual(caught.exception.stage, 'verification')
+
+    def test_wrong_path_with_marker_is_rejected(self):
+        with self.assertRaises(app.LoginFailure):
+            self.run_fixture("location.href='/public/maintenance';")
 
     def test_rejected_credentials(self):
         with self.assertRaises(app.LoginFailure):
@@ -40,7 +57,7 @@ class OfflineTests(unittest.TestCase):
 
     def test_unverified_redirect(self):
         with self.assertRaises(app.LoginFailure):
-            self.run_fixture("location.href='/dashboard';", '<h1>Maintenance</h1>')
+            self.run_fixture("location.href='/public/dashboard';", '<h1>Maintenance</h1>')
 
     def test_login_http_error(self):
         with self.assertRaises(app.LoginFailure):
@@ -51,14 +68,15 @@ class OfflineTests(unittest.TestCase):
             self.run_fixture('')
 
     def test_confirm_dismissed(self):
-        self.run_fixture("if (!confirm('Continue?')) location.href='/dashboard';")
+        self.run_fixture("if (!confirm('Continue?')) location.href='/public/dashboard';")
 
     def test_missing_control_timeout(self):
-        selectors = dict(app.DEFAULTS, USERNAME='#missing')
+        selectors = dict(app.DEFAULTS, USERNAME='#missing', SUCCESS='[data-testid=authenticated-dashboard]')
         with self.browser.new_context() as context:
             context.route('**/*', lambda route: route.fulfill(content_type='text/html', body=FORM.replace('ACTION', '')))
-            with self.assertRaises(BrowserTimeout):
+            with self.assertRaises(app.BrowserFailure) as caught:
                 app.login(context.new_page(), 'offline-user', 'offline-password', 200, selectors)
+            self.assertEqual((caught.exception.stage, caught.exception.code), ('fill-username', 3))
 
     def test_configuration_validation(self):
         with patch.object(app, 'load_dotenv'), patch.dict(os.environ, {}, clear=True):
@@ -73,7 +91,80 @@ class OfflineTests(unittest.TestCase):
     def test_origin_validation(self):
         self.assertFalse(app.authenticated_url('https://evil.example/dashboard'))
         self.assertFalse(app.authenticated_url(app.URL + '?error=1'))
-        self.assertTrue(app.authenticated_url('https://mkenter.express-cisepos.com/dashboard'))
+        self.assertFalse(app.authenticated_url('https://mkenter.express-cisepos.com/dashboard'))
+        self.assertTrue(app.authenticated_url(app.DASHBOARD_URL + '?view=home'))
+
+class RegressionTests(unittest.TestCase):
+    def test_navigation_context_race_retried(self):
+        page = MagicMock()
+        page.url = app.DASHBOARD_URL
+        page.is_closed.return_value = False
+        error = MagicMock()
+        error.first.is_visible.side_effect = [Error('Execution context was destroyed: secret'), False]
+        success = MagicMock()
+        success.is_visible.return_value = True
+        page.locator.side_effect = lambda value: error if value == 'error' else success
+        app.verify_login(page, 1000, {'ERROR': 'error', 'SUCCESS': 'success'})
+        page.wait_for_timeout.assert_called_once()
+
+    def test_invalid_selector_not_retried(self):
+        page = MagicMock()
+        page.is_closed.return_value = False
+        page.locator.side_effect = Error('Invalid selector secret username password cookie token')
+        with self.assertRaises(app.BrowserFailure) as caught:
+            with app.stage('verification'):
+                app.verify_login(page, 1000, {'ERROR': 'bad', 'SUCCESS': 'marker'})
+        self.assertEqual(caught.exception.stage, 'verification')
+        page.wait_for_timeout.assert_not_called()
+
+    def test_diagnostics_never_emit_raw_error(self):
+        output = io.StringIO()
+        with redirect_stdout(output), redirect_stderr(output):
+            try:
+                with app.stage('submission'):
+                    raise Error('private-username private-password cookie token page-content')
+            except app.BrowserFailure as exc:
+                self.assertEqual(exc.code, 4)
+        self.assertEqual(output.getvalue(), 'STAGE: submission\n')
+
+    def test_cleanup_preserves_primary_failure(self):
+        resource = MagicMock()
+        resource.close.side_effect = Error('sensitive cleanup details')
+        with self.assertRaises(app.LoginFailure):
+            try:
+                raise app.LoginFailure('Verification failed.')
+            finally:
+                app.close_resource(resource, 'context-cleanup')
+
+    def test_cleanup_failure_has_own_stage(self):
+        resource = MagicMock()
+        resource.close.side_effect = Error('sensitive cleanup details')
+        with self.assertRaises(app.BrowserFailure) as caught:
+            app.close_resource(resource, 'browser-cleanup')
+        self.assertEqual(caught.exception.stage, 'browser-cleanup')
+
+    def test_closed_page_not_retried(self):
+        page = MagicMock()
+        page.is_closed.return_value = True
+        with self.assertRaises(app.LoginFailure):
+            app.verify_login(page, 1000, {'ERROR': 'error', 'SUCCESS': 'marker'})
+        page.locator.assert_not_called()
+
+    def test_main_sanitizes_browser_failure(self):
+        fake = MagicMock()
+        fake.__enter__.return_value.chromium.launch.side_effect = Error('secret-user secret-pass cookie token content')
+        output = io.StringIO()
+        with patch.object(app, 'configuration', return_value=('dummy', 'dummy', True, 1000, app.DEFAULTS)), patch.object(app, 'sync_playwright', return_value=fake), redirect_stdout(output), redirect_stderr(output):
+            self.assertEqual(app.main(), 4)
+        self.assertIn('stage=browser-launch', output.getvalue())
+        for secret in ('secret-user', 'secret-pass', 'cookie', 'token', 'content'):
+            self.assertNotIn(secret, output.getvalue())
+
+    def test_authenticated_element_required(self):
+        with patch.object(app, 'load_dotenv'), patch.dict(os.environ, {
+            'CISEPOS_USERNAME': 'dummy', 'CISEPOS_PASSWORD': 'dummy'}, clear=True):
+            with self.assertRaises(app.ConfigurationError):
+                app.configuration()
 
 if __name__ == '__main__':
     unittest.main()
