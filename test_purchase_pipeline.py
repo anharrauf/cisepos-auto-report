@@ -229,7 +229,7 @@ class PipelineTests(unittest.TestCase):
         captured = io.StringIO()
         def fail():
             raise ValueError('private credential token item data')
-        with redirect_stdout(captured), redirect_stderr(captured):
+        with patch('purchase_common.load_environment'), redirect_stdout(captured), redirect_stderr(captured):
             self.assertEqual(run_cli(fail), 1)
         self.assertNotIn('private credential', captured.getvalue())
 

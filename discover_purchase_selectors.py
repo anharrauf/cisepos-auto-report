@@ -8,10 +8,11 @@ from urllib.parse import urlsplit
 from download_purchase_report import REPORT_URL
 from login_test import URL
 
-CONTROLS = [('START', 'Start Date', 'input'), ('END', 'End Date', 'input'),
-            ('TYPE', 'Report Type', 'select'), ('GENERATE', 'Generate Report', 'button,a,input'),
-            ('LENGTH', 'Show Entries', 'select'), ('TABLE', 'report table (click inside it)', 'table'),
+FORM_CONTROLS = [('START', 'Start Date', 'input'), ('END', 'End Date', 'input'),
+            ('TYPE', 'Report Type', 'select'), ('GENERATE', 'Generate Report', 'button,a,input')]
+RESULT_CONTROLS = [('LENGTH', 'Show Entries', 'select'), ('TABLE', 'report table (click inside it)', 'table'),
             ('EXCEL', 'Excel export button', 'button,a,input')]
+CONTROLS = FORM_CONTROLS + RESULT_CONTROLS
 # Finite HTML tags plus sibling positions only. Never output DOM attributes,
 # option labels, input values, text, URLs, table cells or server-generated IDs.
 TAGS = 'div|form|section|main|article|aside|header|footer|nav|fieldset|label|span|p|ul|li|ol|table|thead|tbody|tfoot|tr|td|th|input|select|button|a|center|h1|h2|h3|h4|details|summary'
@@ -59,8 +60,8 @@ def arm_picker(page, allowed):
     page.evaluate(PICKER, allowed)
 
 
-def collect_selector(page):
-    page.wait_for_function('window.__purchasePick !== null', timeout=180000)
+def collect_selector(page, *, timeout=180000):
+    page.wait_for_function('window.__purchasePick !== null', timeout=timeout)
     candidate = page.evaluate('window.__purchasePick')
     page.evaluate('window.__purchaseStopPick()')
     if not isinstance(candidate, str) or not STRUCTURAL.fullmatch(candidate):
@@ -68,6 +69,35 @@ def collect_selector(page):
     if page.locator(candidate).count() != 1:
         raise ValueError('Selector is not unique.')
     return candidate
+
+
+def require_report_page(page):
+    if urlsplit(page.url)._replace(query='', fragment='') != urlsplit(REPORT_URL):
+        raise ValueError('Expected report page is not open.')
+
+
+def pick_control(page, control):
+    key, label, allowed = control
+    print(f'Click only the {label} control in Chromium. Do not type or press Enter in the page.')
+    arm_picker(page, allowed)
+    return collect_selector(page)
+
+
+def discover_controls(page, *, prompt=input, picker=pick_control):
+    # Two manual stages: the report form exists before generation; result controls
+    # appear afterward. There is never an automated Generate click here.
+    prompt('Stage 1: log in manually and open the report FORM. Do not generate yet. Press Enter in this console when ready. ')
+    require_report_page(page)
+    candidates = {control[0]: picker(page, control) for control in FORM_CONTROLS}
+    # Remove every capture handler/overlay before asking the user to use the form.
+    page.evaluate('window.__purchaseStopPick?.()')
+    print('Stage 1 complete. The report form is unlocked.')
+    prompt('Stage 2: manually set the dates/type and click Generate Report in Chromium. Wait for the table/Show Entries/Excel controls, then press Enter in this console. ')
+    require_report_page(page)
+    candidates.update({control[0]: picker(page, control) for control in RESULT_CONTROLS})
+    if candidates['START'] == candidates['END'] or candidates['GENERATE'] == candidates['EXCEL']:
+        raise ValueError('Different controls must have different selectors.')
+    return candidates
 
 
 def main():
@@ -80,17 +110,7 @@ def main():
             context = browser.new_context(accept_downloads=False)
             page = context.new_page()
             page.goto(URL, wait_until='domcontentloaded')
-            print('Log in manually in Chromium. Open the purchase report and manually generate it once.')
-            input('When the report controls and table are visible, press Enter here. No page data will be collected. ')
-            if urlsplit(page.url)._replace(query='', fragment='') != urlsplit(REPORT_URL):
-                raise ValueError('Expected report page is not open.')
-            candidates = {}
-            for key, label, allowed in CONTROLS:
-                print(f'Click only the {label} control in Chromium. Do not type or press Enter in the page.')
-                arm_picker(page, allowed)
-                candidates[key] = collect_selector(page)
-            if candidates['START'] == candidates['END'] or candidates['GENERATE'] == candidates['EXCEL']:
-                raise ValueError('Different controls must have different selectors.')
+            candidates = discover_controls(page)
             output = Path(__file__).resolve().with_name('selector_candidates.env')
             output.write_text('# Structural candidates only; verify after reopening the page before copying into .env.\n' +
                               '\n'.join(f'CISEPOS_REPORT_{key}_SELECTOR={value}' for key, value in candidates.items()) + '\n', encoding='utf-8')
