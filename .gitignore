@@ -20,3 +20,16 @@ credentials*
 secrets*
 *.pem
 *.key
+# Local purchase data, analyses, previews, delivery journals and downloads
+data/
+*.xlsx
+*.xls
+*.csv
+*.eml
+*.partial*
+# Also cover generated outputs if DOWNLOAD_BASE_DIR is changed inside the repo
+summary.json
+records.json
+email_delivery.json
+email_preview.html
+*.lock/
