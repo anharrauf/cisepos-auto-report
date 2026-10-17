@@ -128,8 +128,11 @@ def deliver(summary, excel, folder, send=False, include_csv=True, allow_resend=F
     atomic_bytes(folder / 'email_preview.html', render_html(summary).encode('utf-8'))
     if not send:
         return  # No SMTP configuration, connection, or email side effect.
+    diagnostic('email-configuration')
     settings = smtp_settings()
     message = build_message(summary, excel, folder / 'comparison.csv' if include_csv else None, settings)
+    diagnostic('email-tls-setup')
+    tls = ssl.create_default_context()
     journal = folder / 'email_delivery.json'
     # Exclusive claim prevents two manual email invocations from delivering twice.
     if journal.exists():
@@ -145,7 +148,6 @@ def deliver(summary, excel, folder, send=False, include_csv=True, allow_resend=F
     diagnostic('email-smtp-delivery')
     # A pending journal is deliberately retained on any error, including uncertain
     # acceptance after a network disconnect. Automatic retries could duplicate mail.
-    tls = ssl.create_default_context()
     client_class = smtplib.SMTP_SSL if settings['mode'] == 'ssl' else smtplib.SMTP
     kwargs = {'context': tls} if settings['mode'] == 'ssl' else {}
     with client_class(settings['host'], settings['port'], timeout=settings['timeout'], **kwargs) as client:

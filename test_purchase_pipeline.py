@@ -39,7 +39,11 @@ class PipelineTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name)
-        self.environment = patch.dict(os.environ, {}, clear=True)
+        app_prefixes = ('CISEPOS_', 'PURCHASE_', 'SMTP_', 'EMAIL_', 'REPORT_', 'DOWNLOAD_')
+        # Windows/OpenSSL need system variables (e.g. SystemRoot). Isolate only
+        # application configuration, not the operating-system environment.
+        clean = {key: value for key, value in os.environ.items() if not key.startswith(app_prefixes)}
+        self.environment = patch.dict(os.environ, clean, clear=True)
         self.environment.start()
         self.addCleanup(self.environment.stop)
         self.path = self.base / 'report.xlsx'
