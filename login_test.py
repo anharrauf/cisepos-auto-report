@@ -130,8 +130,8 @@ def login(page, username, password, timeout, selectors):
     with stage('fill-password'):
         page.locator(selectors['PASSWORD']).fill(password)
     with stage('submission'):
-        # Playwright owns actionability and navigation waiting. Never click twice.
-        page.locator(selectors['SUBMIT']).click()
+        # Preserve the submit behavior confirmed on the Windows VPS. Never click twice.
+        page.locator(selectors['SUBMIT']).click(no_wait_after=True)
     with stage('verification'):
         verify_login(page, timeout, selectors)
 

@@ -1,91 +1,194 @@
-# CISEPOS login automation
+# CISEPOS daily purchase reports
 
-Python 3.10+ and Playwright Chromium. Opens https://mkenter.express-cisepos.com/public/login, fills credentials from environment variables, submits once, and verifies authentication. Headless by default. No report downloads, stored sessions, screenshots, traces, or credentials in source.
+Python 3.13 / Playwright 1.62 automation for Windows Server 2022 (also supports headless Ubuntu). One login → All Branches Purchase Report → XLSX → historical rate analysis → HTML dashboard → TLS SMTP email with Excel and optional CSV attachments. The existing login remains usable separately, including the VPS-confirmed `click(no_wait_after=True)` submit behavior.
 
-## Ubuntu VPS setup
+## Windows VPS setup
 
-Run the automation as a regular user. Installation of Ubuntu system packages needs sudo.
-
-```bash
-sudo apt-get update
-sudo apt-get install -y python3 python3-venv
-cd /path/to/cisepos-login
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python -m playwright install --with-deps chromium
-```
-
-The final command may request sudo for browser system libraries. A headless VPS does not need a desktop or X server. Ensure the VPS can access the CISEPOS hostname over HTTPS and Playwright's browser download servers during installation. Keep TLS certificate verification enabled.
-
-## Configure credentials
-
-```bash
-cp .env.example .env
-chmod 600 .env
-```
-
-Edit `.env` locally and supply `CISEPOS_USERNAME` and `CISEPOS_PASSWORD`. Quote values containing spaces or `#`. Dotenv interpolation is disabled so literal `$` characters are preserved. Alternatively inject both variables with your deployment's secret manager. Exported environment values take precedence over `.env`. Do not place credentials in command arguments, shell history, source, issue trackers, or logs. `.gitignore` excludes local environment files and session artifacts; `.env.example` contains no secrets.
-
-Optional settings:
-
-| Variable | Default / use |
-| --- | --- |
-| `CISEPOS_HEADLESS` | `true`; use `false` only with a display for manual debugging |
-| `CISEPOS_TIMEOUT_MS` | `30000`; positive integer up to `300000`, per action and verification phase |
-| `CISEPOS_USERNAME_SELECTOR` | Visible username/email/autocomplete username input |
-| `CISEPOS_PASSWORD_SELECTOR` | Visible password input |
-| `CISEPOS_SUBMIT_SELECTOR` | Visible submit button/input |
-| `CISEPOS_SUCCESS_SELECTOR` | **Required**: a confirmed authenticated-only dashboard element; no default |
-| `CISEPOS_ERROR_SELECTOR` | Visible error alert or validation message |
-| `CISEPOS_CHROMIUM_PATH` | Optional system Chromium path; normally use Playwright's installed Chromium |
-
-## Confirm selectors before the first live run
-
-The live CISEPOS DOM could not be inspected here because the environment's network allowlist excludes the domain. Default selectors are conventional candidates, not confirmed CISEPOS selectors. Inspect the login page manually in browser developer tools and override selectors in `.env` as needed. Username/password/submit selectors should each match exactly one visible element. Set `CISEPOS_SUCCESS_SELECTOR` to exactly one visible element you have manually confirmed is available only in an authenticated dashboard session. No logout selector is assumed. This setting is required before any credentials are submitted. Do not choose a generic heading or navigation container.
-
-Verification requires the exact HTTPS origin and `/public/dashboard` path (an optional trailing slash or query is allowed), together with one visible authenticated-only UI element. The URL is checked again after reading the element to catch intervening redirects. Redirecting alone never counts as success. If this deployment keeps the login URL after authentication, or opens authentication in a new window, adapt the verification to the observed application before use. Browser popups are closed; JS alerts are accepted and confirmations/prompts dismissed. HTML error dialogs are detected by the error selector; unrelated HTML modals need a page-specific handler. MFA and CAPTCHA are not bypassed.
-
-## Run a live login
-
-```bash
-source .venv/bin/activate
-python login_test.py
-```
-
-A successful run prints `SUCCESS: CISEPOS login verified.` and closes the browser, discarding the session. There are no automatic retries that could lock an account. Failures print a sanitized reason; raw Playwright logs and server messages are suppressed because they can contain credentials. Do not enable `DEBUG=pw:api`, tracing or screenshots with real credentials without reviewing their secret exposure.
-
-Exit codes: `0` verified, `1` login failure/unverified result, `2` configuration error, `3` navigation/control timeout, `4` browser/selector/runtime error, `130` cancellation. A login result timeout returns `1`. Browser contexts and browsers close on success and failure.
-
-## Safe tests without credentials
-
-```bash
-python -m unittest -v test_offline.py
-python -m py_compile login_test.py test_offline.py
-```
-
-Offline tests use dummy credentials and intercept all browser requests with local HTML fixtures. They do not contact CISEPOS or load `.env`. They cover configuration validation, same-origin verification, success with an alert, confirmation dismissal, credential rejection, HTTP failure, stalled login, missing controls, and redirects without authenticated evidence.
-
-Validation performed in the supplied environment: all 21 tests passed using system Chromium with Playwright 1.62.0 and python-dotenv 1.2.2. Syntax compilation and missing-credential exit behavior were also checked. Real credentials and live CISEPOS authentication were not tested. The initial sandbox blocked Chromium startup; the tests passed with approved browser execution permissions.
-
-## Windows Server 2022 (Python 3.13, Playwright 1.62)
-
-From PowerShell in the cloned repository:
+In PowerShell, from your cloned repository:
 
 ```powershell
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m playwright install chromium
 Copy-Item .env.example .env
-.\.venv\Scripts\python.exe -m unittest -v test_offline.py
 ```
 
-Edit `.env` locally, including a manually confirmed `CISEPOS_SUCCESS_SELECTOR`. Restrict the file ACL to the Windows service account/administrators; `chmod` is Linux-specific. Existing exported environment values still override `.env`. Leave `CISEPOS_CHROMIUM_PATH` unset when using Playwright-installed Chromium. After configuration, a single real attempt can be run with `.\.venv\Scripts\python.exe login_test.py`. No live attempts were made while developing this fix.
+Keep your existing `.env` rather than overwriting it on upgrades; copy only the new fields from `.env.example`. Edit locally. Restrict its Windows ACL to the service account and administrators. Never paste credentials into chat or commit them. Exported environment variables override `.env`; dotenv interpolation is disabled. Use Playwright-installed Chromium unless `CISEPOS_CHROMIUM_PATH` intentionally selects another installation. `tzdata` supports IANA time zones on Windows.
 
-## Diagnosing intermittent exit code 4
+Ubuntu alternative:
 
-Fixed stage labels identify `navigation`, `fill-username`, `fill-password`, `submission`, `verification`, browser/context/page creation, and context/browser cleanup. For example, `BROWSER FAILURE: stage=verification category=browser-or-selector-error` identifies the phase without exposing the selector, exception, URL, username, password, cookies, tokens, or page content. Runtime startup/shutdown errors use `playwright-runtime`. A timeout at an action returns `3`; failure to confirm login returns `1`. No raw exceptions are printed.
+```bash
+sudo apt-get update
+sudo apt-get install -y python3 python3-venv
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m playwright install --with-deps chromium
+cp .env.example .env
+chmod 600 .env
+```
 
-A dashboard redirect could previously interrupt a locator read with an execution-context error. The verifier now retries only known navigation-context interruptions within its deadline and waits for the configured marker after redirects or delayed rendering. Invalid/ambiguous selectors and closed pages are not silently retried. The old password-disappearance check is removed: a confirmed authenticated marker and exact dashboard URL are the evidence. Submission uses Playwright's normal action/navigation waiting, once only. Cleanup failures have their own stage and cannot overwrite an earlier login failure.
+Use the virtual environment interpreter in all commands. No display is required with `CISEPOS_HEADLESS=true`. Allow HTTPS access to CISEPOS and the configured SMTP destination/port. TLS verification remains enabled.
 
-These are plausible causes identified from the code; the original Windows failure was not reproduced against CISEPOS. Regression coverage includes a dashboard reload during verification, delayed UI without logout controls, duplicate/invalid selectors, exact dashboard matching, navigation-context interruption, closed pages, cleanup precedence, and sanitized output. Tests ran on Linux Chromium; Windows Server 2022/Python 3.13 execution remains to be confirmed on that host.
+## One-time deployment configuration
+
+The login behavior works on the VPS. The 14-column Excel layout is now confirmed; report-control CSS selectors still need one-time local discovery. No live requests were made for this feature. Confirm the following manually before scheduling. The code refuses to guess missing controls and does not retry logins.
+
+- Preserve `CISEPOS_USERNAME`, `CISEPOS_PASSWORD`, and any working login-selector overrides. Set `CISEPOS_SUCCESS_SELECTOR` to exactly one visible authenticated-only dashboard element. Login verification requires the exact `/public/dashboard` path plus that element.
+- Confirm CSS selectors for `CISEPOS_REPORT_START_SELECTOR`, `END_SELECTOR`, `TYPE_SELECTOR`, `GENERATE_SELECTOR`, `TABLE_SELECTOR`, `LENGTH_SELECTOR`, and `EXCEL_SELECTOR` (each prefixed `CISEPOS_REPORT_`). Use unique selectors; a table ID is ideal. Report selectors must be standard CSS because the redraw observer uses the same selectors in the DOM. No report controls have guessed defaults.
+- The start/end inputs must accept text in `dd-mm-yyyy`, as specified for this deployment. The report type selector is a native `<select>` with visible option label `WithTax&Disc`. The page-length selector is a native `<select>` with an `All` option. A custom widget requires a page-specific adapter, not an invented selector.
+- Set `CISEPOS_PURCHASE_REPORT_URL` to the provided report URL (already in `.env.example`). Only the existing CISEPOS HTTPS origin is accepted. `CISEPOS_REPORT_TIMEOUT_MS=120000` controls report actions/export; the login retains `CISEPOS_TIMEOUT_MS`.
+- Generate must redraw the table, trigger a DataTables draw, or load a new document. The script waits for that signal and for any DataTables processing indicator to disappear; an old visible table alone is insufficient. After selecting All it waits again. For initialized DataTables it checks loaded row count against filtered record count and refuses known partial exports. Verify once that the resulting Excel covers all branches/items; custom server-side export implementations can need an adapter.
+- The Excel button must produce a real `.xlsx` download. Legacy `.xls`, HTML disguised as Excel, or a button that opens a new window instead of downloading are not supported. Such exports fail rather than being silently renamed.
+
+## Confirmed Purchasing workbook layout
+
+Row 1 is a report banner (title, dates, branch, print timestamp). Row 2 contains the headings; `PURCHASE_HEADER_ROW=1` is the zero-based header index. `.env.example` now supplies the exact column map and enables `PURCHASE_BRANCH_AWARE=true`. Keep these settings when updating your existing `.env`.
+
+| Exact heading | Canonical field |
+| --- | --- |
+| Purchase Type | purchase_type |
+| Transaction No | transaction_no |
+| Date | purchase_date |
+| Branch | branch |
+| BarCode | item_code |
+| Item | item |
+| Default Unit | unit |
+| Supplier | supplier |
+| Quantity | quantity |
+| PurchaseRate | purchase_rate |
+| GrossAmount | gross_amount |
+| TaxAmount | tax_amount |
+| Discount Amount | discount_amount |
+| NetAmount | net_amount |
+
+`PURCHASE_SHEET=0` selects the first worksheet. All 14 headings are required for this CISEPOS layout. Numbers use decimal dots and optional comma thousands separators; native Excel dates, serial dates and day-first date text are supported. Preserve barcodes as text in the export where possible, including leading zeroes. No currency or unit conversion is inferred.
+
+### Item rows, transactions and history
+
+- Empty Item rows, transaction header rows and Total/subtotal rows are excluded from purchase-line amounts. Explicit transaction headers supply Transaction No, Purchase Type, Date and Branch to following item rows in that transaction. Totals end that metadata context; a different transaction number cannot inherit an earlier transaction's metadata. Missing required metadata fails validation.
+- Positive-quantity item rows must contain PurchaseRate and NetAmount. Returns and zero-quantity adjustments remain excluded. Transaction header invoice totals are never added to line totals.
+- Transaction identity is Purchase Type + Transaction No + Branch + date. The email counts distinct transactions separately from item rows. Repeated complete transaction blocks with identical lines are included once; conflicting copies stop analysis for review. Multiple identical legitimate item lines inside one transaction remain intact. Without an export line ID, identical adjacent flat lines cannot safely be classified as accidental duplicates; the tool does not guess by deleting item lines.
+- Item identity prefers BarCode, then Item name. Comparison keys also include Default Unit and Branch for this confirmed layout (disabling branch mode is rejected). No kg/box conversion or cross-branch price matching is performed. A branch's transaction number may be reused in another branch without being deduplicated.
+
+### PurchaseRate and effective net rate are separate
+
+The main rate-change fields (`current_purchase_rate`, `previous_purchase_rate`, `absolute_difference`, `percent_difference`) use the exported **PurchaseRate**, never NetAmount/Quantity or GrossAmount/Quantity. When an item has multiple purchases today, the displayed current PurchaseRate is quantity-weighted across today's lines. Previous PurchaseRate uses the most recent earlier available timestamp for the same item/unit/branch; if the export has dates only, ties on the latest purchase day are quantity-weighted. Daily volume totals still include all of today's positive purchase lines.
+
+Tax/discount-adjusted **effective net rate** is separately calculated as sum(NetAmount)/sum(Quantity), with `current_effective_net_rate`, `previous_effective_net_rate`, `effective_absolute_difference` and `effective_percent_difference`. The previous effective rate corresponds to the records selected for the previous PurchaseRate. The HTML email labels both measures and shows both changes. A prior zero rate has an absolute difference but no percentage.
+
+Generic older exports can still be analyzed with custom mappings; missing PurchaseRate is left unavailable rather than being inferred from amounts. The confirmed CISEPOS layout always requires the explicit rate and net amount. Total purchase amount uses NetAmount for the confirmed layout; generic exports may use gross when net is absent.
+
+History remains in `data/processed/YYYY-MM-DD/records.json`. Version 2 snapshots preserve each item's explicit PurchaseRate, NetAmount, transaction identity, unit, branch, quantity and timestamp. Existing historical dates are not modified when another day is analyzed; rerunning a date replaces that day's snapshot rather than appending duplicates. Earlier rows in a range workbook can supply history, and overlapping imports are not double-counted. Future records/snapshots do not influence a selected day.
+
+Legacy version 1 snapshots are retained, but amount-derived rates in them are **not** reinterpreted as PurchaseRate. The comparison searches for the latest earlier record with a real PurchaseRate; if none exists, the email marks legacy rate history as unavailable. Reanalyze the original historical XLSX files using the new confirmed mapping to populate actual rates. New items and legacy rate-unavailable items are shown separately. Back up history and keep item/unit/branch mappings consistent across dates.
+
+## One-time safe selector discovery on the Windows VPS
+
+Run locally in an interactive desktop/RDP session (not from Codex or Task Scheduler):
+
+```powershell
+.\discover_purchase_selectors.ps1
+```
+
+The wrapper uses `.venv\Scripts\python.exe`; you can also run `.\.venv\Scripts\python.exe discover_purchase_selectors.py`. It opens an ephemeral headed Chromium session and asks you to log in **manually in the browser**. It never loads credentials from `.env`, fills login fields or stores browser state. Navigate manually to the purchase-report page and generate the report once yourself so the table and Excel control are visible. Press Enter in the PowerShell window only when ready.
+
+The script then prompts you to click exactly seven controls: Start Date, End Date, Report Type, Generate Report, Show Entries, the table, and Excel. While picking, a transparent overlay receives mouse clicks instead of the controls underneath; capture handlers additionally suppress pointer/form/button actions and keyboard activation. The script does not generate/export reports, inspect field/option values, read labels/text/HTML/table records, collect DOM attributes or take screenshots. It computes only standard HTML tag paths and sibling positions; candidate output is validated against a strict structural-selector grammar so IDs/names/tokens cannot appear in the output. Browser-debug modes are disabled. The browser and session close afterward.
+
+Seven candidates are saved locally to ignored `selector_candidates.env`. These are positional candidates, not stable application IDs: reopen the report in a fresh manual session and confirm each resolves to the intended single control before copying into `.env`. Dynamic page layouts can require different selectors. Do not copy credentials or purchasing data into the candidate file or share page dumps. Discovery is designed for native date/select controls as documented above; unsupported custom widgets require an adapter.
+
+## Run each component
+
+Commands below are PowerShell; replace the example dates and paths locally.
+
+Login smoke test (one attempt, no reports):
+
+```powershell
+.\.venv\Scripts\python.exe login_test.py
+```
+
+Download only (one login, no analysis or email):
+
+```powershell
+.\.venv\Scripts\python.exe download_purchase_report.py --date 2026-10-17
+```
+
+It sets both dates to that day. Optional `--start-date 2026-10-01 --end-date 2026-10-17` downloads a range for history import; `--date` labels the saved folder/file. Analyze each desired report day with the same workbook if importing a range that has a purchase-date column.
+
+Analysis only (fully offline; no login/SMTP):
+
+```powershell
+.\.venv\Scripts\python.exe analyze_purchase_report.py --input data\raw\2026-10-17\purchase_report_2026-10-17.xlsx --date 2026-10-17
+```
+
+Email preview only (default; no SMTP connection):
+
+```powershell
+.\.venv\Scripts\python.exe send_purchase_email.py --summary data\processed\2026-10-17\summary.json --excel data\raw\2026-10-17\purchase_report_2026-10-17.xlsx
+```
+
+Send the prepared email with Excel and CSV attachments:
+
+```powershell
+.\.venv\Scripts\python.exe send_purchase_email.py --summary data\processed\2026-10-17\summary.json --excel data\raw\2026-10-17\purchase_report_2026-10-17.xlsx --send
+```
+
+Use `--no-csv` to omit CSV. The HTML dashboard includes totals, unique items, purchase rows, increases/decreases, new items and top purchases. Names are HTML-escaped; CSV text is protected against spreadsheet formula injection. The plain-English paragraph is generated deterministically from computed figures: it is an AI-style data narrative, **not an external LLM call**. Purchase data is not sent to an AI provider. No images or JavaScript are needed in the email.
+
+SMTP configuration: `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY=starttls` (usually 587) or `ssl` (usually 465), `SMTP_USERNAME`, `SMTP_PASSWORD`, `EMAIL_FROM`, comma-separated `EMAIL_TO`, and `EMAIL_SUBJECT_PREFIX`. Both SMTP credentials may be empty only for an authorized TLS relay. Plain SMTP is disabled. `EMAIL_MAX_ATTACHMENT_MB` limits raw attachment bytes (default 20 MB; allow for MIME overhead and your provider's limits). `SMTP_TIMEOUT_SECONDS` defaults to 60. No SMTP debug output is enabled.
+
+## Full workflow and dry run
+
+```powershell
+# Safe first test: existing file, no login, no network or email
+.\.venv\Scripts\python.exe run_daily_purchase_report.py --date 2026-10-17 --input C:\Reports\purchase.xlsx --dry-run
+
+# Full automatic workflow: downloads and SENDS email
+.\.venv\Scripts\python.exe run_daily_purchase_report.py
+
+# Explicit modes
+.\.venv\Scripts\python.exe run_daily_purchase_report.py --date yesterday
+.\.venv\Scripts\python.exe run_daily_purchase_report.py --date today
+.\.venv\Scripts\python.exe run_daily_purchase_report.py --date 2026-10-17
+```
+
+`REPORT_DATE_MODE=yesterday` is the default. `REPORT_TIMEZONE=Asia/Karachi` determines today/yesterday independently of the Windows machine's time zone. `DOWNLOAD_BASE_DIR=data` is resolved relative to the project, not Task Scheduler's working directory; absolute paths are accepted. A full run with `--input` skips the browser but still **sends** email unless `--dry-run` is present.
+
+Local outputs:
+
+```text
+data/raw/YYYY-MM-DD/purchase_report_YYYY-MM-DD.xlsx
+data/processed/YYYY-MM-DD/comparison.csv
+data/processed/YYYY-MM-DD/summary.json
+data/processed/YYYY-MM-DD/records.json
+data/processed/YYYY-MM-DD/email_preview.html
+data/processed/YYYY-MM-DD/email_delivery.json
+data/state/YYYY-MM-DD.lock/
+```
+
+Dry runs use production history read-only and write their outputs under `data/dry-run/processed/YYYY-MM-DD/`; they cannot mark production mail as delivered. Protect all these files as business data. They are intentionally excluded from Git. File writes use a temporary file plus atomic rename; `.partial.xlsx` is never treated as a completed download.
+
+## Scheduling later with Windows Task Scheduler
+
+After validating selectors, columns, report completeness and one delivery on the VPS:
+
+1. Open **Task Scheduler → Create Task**. Use a dedicated account with permission to the repository, `.env`, Chromium cache and data directory. Choose “Run whether user is logged on or not.” Install the Playwright browser as that same account.
+2. Set a daily trigger after the previous day's purchasing is complete, using your desired local schedule.
+3. Action **Start a program**: Program `C:\path\cisepos-auto-report\.venv\Scripts\python.exe`; Arguments `"C:\path\cisepos-auto-report\run_daily_purchase_report.py"`; Start in `C:\path\cisepos-auto-report`.
+4. In Settings choose **Do not start a new instance** if already running. Set a suitable execution limit longer than the configured browser/SMTP timeouts. Review Last Run Result (`0` means completed or already delivered; feature scripts return `1` for sanitized failure and `130` for cancellation).
+
+A per-date lock also blocks overlapping full runs. If forcibly killed, a lock may remain: confirm no process is running before removing that day's `.lock` directory. Do not run standalone download/analysis commands concurrently with a full job for the same date. Do not add automatic retry loops around logins or uncertain deliveries.
+
+A delivery journal is written as `pending` before SMTP and `sent` after confirmed completion. An already-sent full run is skipped. A disconnect/partial-recipient refusal leaves `pending`; this prevents an automatic duplicate even when the mail server may have accepted it. SMTP cannot guarantee exactly-once delivery. Check the mail server/recipients first, then use `--allow-resend` only for an intentional resend. This flag must not be used by a scheduled task.
+
+## Safe diagnostics and offline tests
+
+Only fixed stage labels/status messages are printed. Feature CLI wrappers suppress raw exceptions, server responses, selectors and private values. Do not enable `DEBUG=pw:api`, SMTP debug, screenshots, traces or page dumps with real credentials. Existing login diagnostics retain their safe stage labels. A timeout, bad column mapping, invalid export, expired session, partial table, SMTP error or missing configuration stops the workflow. There are no repeated login attempts, security bypasses or silently guessed report schema.
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -v
+.\.venv\Scripts\python.exe -m py_compile login_test.py purchase_common.py download_purchase_report.py analyze_purchase_report.py send_purchase_email.py run_daily_purchase_report.py
+```
+
+Tests generate synthetic workbooks, intercept browser requests and mock SMTP. They cover login regression, dd-mm-yyyy dates, report type selection, redraw waiting, All entries, validated XLSX download, historical rate calculation, separate PurchaseRate/net-rate calculations, transaction deduplication, selector-discovery safety, totals/returns exclusion, units/branches, missing history, escaped HTML/CSV, delivery journals and dry-run isolation. No test requires CISEPOS or SMTP credentials. `CISEPOS_CHROMIUM_PATH` can select a system Chromium for offline tests. CI is configured to run the suite on Windows Server 2022/Python 3.13 and Ubuntu.
+
+Current schema/discovery validation: all 64 offline tests passed locally on Linux Chromium, syntax compilation and Git whitespace checks passed, and a synthetic command-line dry run produced CSV/JSON/HTML without a delivery journal; live report selectors, a real workbook import, SMTP delivery and execution on your Windows VPS still require a one-time deployment check. Keep `.env`, credentials, virtual environments, raw/processed business data and ZIP artifacts out of source control.
