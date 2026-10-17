@@ -1,0 +1,22 @@
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.log
+playwright-report/
+test-results/
+artifacts/
+.auth/
+storage_state*.json
+# Archives and local secret material
+*.zip
+ENV/
+env/
+credentials*
+secrets*
+*.pem
+*.key
