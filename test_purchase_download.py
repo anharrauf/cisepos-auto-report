@@ -11,6 +11,8 @@ from openpyxl import Workbook
 from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeout
 from download_purchase_report import export_report, validate_xlsx, report_settings
 from purchase_common import WorkflowError
+from offline_test_support import ACTION_TIMEOUT_MS, EXPECTED_FAILURE_TIMEOUT_MS
+import download_purchase_report as download_module
 
 SELECTORS = dict(START='#start', END='#end', TYPE='#type', GENERATE='#generate',
                  TABLE='#report', LENGTH='#length', EXCEL='#excel')
@@ -58,9 +60,11 @@ class DownloadTests(unittest.TestCase):
                     route.fulfill(content_type='text/html', body=fake_page(**dict(options, already_all=True)) if urlsplit(route.request.url).path == '/generated' else fake_page(**options))
             context.route('**/*', route_handler)
             page = context.new_page()
+            page.set_default_timeout(ACTION_TIMEOUT_MS)
+            page.set_default_navigation_timeout(ACTION_TIMEOUT_MS)
             page.goto('https://offline.invalid/report')
             target = Path(temp) / 'raw' / '2026-10-17' / 'purchase_report_2026-10-17.xlsx'
-            export_report(page, date(2026, 10, 17), date(2026, 10, 17), target, SELECTORS, 'WithTax&Disc', 1500)
+            export_report(page, date(2026, 10, 17), date(2026, 10, 17), target, SELECTORS, 'WithTax&Disc', ACTION_TIMEOUT_MS)
             if options.get('full_navigation'):
                 submitted = parse_qs(urlsplit(page.url).query)
                 self.assertEqual(submitted, {'start':['17-10-2026'], 'end':['17-10-2026'], 'type':['taxdisc']})
@@ -79,8 +83,11 @@ class DownloadTests(unittest.TestCase):
         self.exercise(already_all=True)
 
     def test_stale_table_is_not_exported(self):
-        with self.assertRaises(BrowserTimeout):
-            self.exercise(redraw=False)
+        wait = download_module.wait_draw
+        with patch.object(download_module, 'wait_draw', side_effect=lambda page, selectors, timeout: wait(page, selectors, EXPECTED_FAILURE_TIMEOUT_MS)) as wait_for_draw:
+            with self.assertRaises(BrowserTimeout):
+                self.exercise(redraw=False)
+            wait_for_draw.assert_called_once()
 
     def test_invalid_excel_is_rejected(self):
         from zipfile import BadZipFile
@@ -95,6 +102,8 @@ class DownloadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, self.browser.new_context(accept_downloads=True) as context:
             context.route('**/*', lambda route: route.fulfill(content_type='text/html', body=fake_page()))
             page = context.new_page()
+            page.set_default_timeout(ACTION_TIMEOUT_MS)
+            page.set_default_navigation_timeout(ACTION_TIMEOUT_MS)
             page.goto('https://offline.invalid/report')
             page.evaluate("""() => {
                 window.jQuery = () => ({off(){return this}, on(){return this}, DataTable(){
@@ -103,7 +112,7 @@ class DownloadTests(unittest.TestCase):
                 window.jQuery.fn={dataTable:{isDataTable:()=>true}};
             }""")
             with self.assertRaises(WorkflowError):
-                export_report(page, date(2026,10,17), date(2026,10,17), Path(temp)/'out.xlsx', SELECTORS, 'WithTax&Disc', 1500)
+                export_report(page, date(2026,10,17), date(2026,10,17), Path(temp)/'out.xlsx', SELECTORS, 'WithTax&Disc', ACTION_TIMEOUT_MS)
             self.assertFalse((Path(temp)/'out.xlsx').exists())
 
     def test_missing_controls_fail_before_login(self):

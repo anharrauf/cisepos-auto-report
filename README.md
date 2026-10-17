@@ -90,9 +90,9 @@ Run locally in an interactive desktop/RDP session (not from Codex or Task Schedu
 .\discover_purchase_selectors.ps1
 ```
 
-The wrapper uses `.venv\Scripts\python.exe`; you can also run `.\.venv\Scripts\python.exe discover_purchase_selectors.py`. It opens an ephemeral headed Chromium session and asks you to log in **manually in the browser**. It never loads credentials from `.env`, fills login fields or stores browser state. Navigate manually to the purchase-report page and generate the report once yourself so the table and Excel control are visible. Press Enter in the PowerShell window only when ready.
+The wrapper uses `.venv\Scripts\python.exe`; you can also run `.\.venv\Scripts\python.exe discover_purchase_selectors.py`. It opens an ephemeral headed Chromium session and asks you to log in **manually in the browser**. It never loads credentials from `.env`, fills login fields or stores browser state. Discovery now has two stages. First navigate manually to the purchase-report form **before** generating. Press Enter in the PowerShell window and pick Start Date, End Date, Report Type and Generate Report. The overlay is then removed so you can manually fill dates/type and click Generate Report once. Wait for the results to appear, press Enter in PowerShell again, then pick Show Entries, the report table and Excel. The script never clicks Generate itself.
 
-The script then prompts you to click exactly seven controls: Start Date, End Date, Report Type, Generate Report, Show Entries, the table, and Excel. While picking, a transparent overlay receives mouse clicks instead of the controls underneath; capture handlers additionally suppress pointer/form/button actions and keyboard activation. The script does not generate/export reports, inspect field/option values, read labels/text/HTML/table records, collect DOM attributes or take screenshots. It computes only standard HTML tag paths and sibling positions; candidate output is validated against a strict structural-selector grammar so IDs/names/tokens cannot appear in the output. Browser-debug modes are disabled. The browser and session close afterward.
+Across the two stages the script prompts you to click exactly seven controls: Start Date, End Date, Report Type, Generate Report, Show Entries, the table, and Excel. While picking, a transparent overlay receives mouse clicks instead of the controls underneath; capture handlers additionally suppress pointer/form/button actions and keyboard activation. The script does not generate/export reports, inspect field/option values, read labels/text/HTML/table records, collect DOM attributes or take screenshots. It computes only standard HTML tag paths and sibling positions; candidate output is validated against a strict structural-selector grammar so IDs/names/tokens cannot appear in the output. Browser-debug modes are disabled. The browser and session close afterward.
 
 Seven candidates are saved locally to ignored `selector_candidates.env`. These are positional candidates, not stable application IDs: reopen the report in a fresh manual session and confirm each resolves to the intended single control before copying into `.env`. Dynamic page layouts can require different selectors. Do not copy credentials or purchasing data into the candidate file or share page dumps. Discovery is designed for native date/select controls as documented above; unsupported custom widgets require an adapter.
 
@@ -191,4 +191,30 @@ Only fixed stage labels/status messages are printed. Feature CLI wrappers suppre
 
 Tests generate synthetic workbooks, intercept browser requests and mock SMTP. They cover login regression, dd-mm-yyyy dates, report type selection, redraw waiting, All entries, validated XLSX download, historical rate calculation, separate PurchaseRate/net-rate calculations, transaction deduplication, selector-discovery safety, totals/returns exclusion, units/branches, missing history, escaped HTML/CSV, delivery journals and dry-run isolation. No test requires CISEPOS or SMTP credentials. `CISEPOS_CHROMIUM_PATH` can select a system Chromium for offline tests. CI is configured to run the suite on Windows Server 2022/Python 3.13 and Ubuntu.
 
-Current schema/discovery validation: all 64 offline tests passed locally on Linux Chromium, syntax compilation and Git whitespace checks passed, and a synthetic command-line dry run produced CSV/JSON/HTML without a delivery journal; live report selectors, a real workbook import, SMTP delivery and execution on your Windows VPS still require a one-time deployment check. Keep `.env`, credentials, virtual environments, raw/processed business data and ZIP artifacts out of source control.
+Previous schema/discovery validation: all 64 original offline tests passed locally on Linux Chromium, syntax compilation and Git whitespace checks passed, and a synthetic command-line dry run produced CSV/JSON/HTML without a delivery journal; live report selectors, a real workbook import, SMTP delivery and execution on your Windows VPS still require a one-time deployment check. Keep `.env`, credentials, virtual environments, raw/processed business data and ZIP artifacts out of source control.
+
+### Offline timeouts on a Windows VPS
+
+The former login fixture supplied a **1200ms deadline for every production login action**, including submit-click actionability and any navigation work. A local synthetic button that remains disabled for 1800ms reproduces `BrowserFailure('submission', 'timeout', 3)` with the old budget and passes with the new budget. This confirms that the fixture budget can cause the reported failure; it does not establish which actionability/navigation condition or host scheduling delay caused the four failures on your VPS. The real site's successful login is not evidence of a credential issue in these synthetic tests.
+
+Production `login_test.py` is unchanged, including `click(no_wait_after=True)` and production timeout configuration. Normal offline login/report actions now use a **15000ms condition-based deadline**. This is an upper bound, not a fixed delay. Tests retain the real Playwright click and login verification. Intentionally missing-control, stale-table and unsuccessful-verification tests use short deadlines only for their expected failing operation; they assert the failure stage/result, so an earlier action failure is not accepted. There are no added retries, skips or blanket exception catches.
+
+After checking out this PR branch, verify from PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m playwright install chromium
+.\.venv\Scripts\python.exe -m unittest discover -v
+$LASTEXITCODE  # Expected: 0
+```
+
+For an unusually slow/shared VPS, increase only the test budget (5000–120000ms allowed):
+
+```powershell
+$env:CISEPOS_OFFLINE_TIMEOUT_MS = '30000'
+.\.venv\Scripts\python.exe -m unittest discover -v
+$LASTEXITCODE
+Remove-Item Env:CISEPOS_OFFLINE_TIMEOUT_MS
+```
+
+The test-only module is never imported by production scripts. Tests do not load `.env` credentials, log in to CISEPOS, download a real report or send email. The staged-discovery regression starts with no results, confirms the form is unlocked for a simulated manual Generate, and then picks the newly created table/Excel controls without activating them.
