@@ -33,3 +33,6 @@ records.json
 email_delivery.json
 email_preview.html
 *.lock/
+
+# Local selector-discovery candidates
+selector_candidates.env

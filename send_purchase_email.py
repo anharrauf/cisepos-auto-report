@@ -22,12 +22,14 @@ def insights(summary):
     items = summary['items']
     up = sum(1 for r in items if (r['absolute_difference'] or 0) > 0)
     down = sum(1 for r in items if (r['absolute_difference'] or 0) < 0)
-    new = sum(1 for r in items if r['previous_rate'] is None)
+    new = sum(1 for r in items if r.get('comparison_status') == 'new_item')
+    legacy = sum(1 for r in items if r.get('comparison_status') == 'legacy_rate_unavailable')
     return (f"Purchases totaled {money(summary['total_purchase_amount'])} across "
-            f"{summary['total_unique_items']} unique items and {summary['total_rows']} item-level rows. "
+            f"{summary['total_unique_items']} unique items, {summary.get('total_transactions', 0)} purchasing transactions and {summary['total_rows']} item-level rows. "
             f"Compared with the latest locally available prior purchase, {up} item/unit groups increased "
-            f"in rate and {down} decreased; {new} have no prior comparison. "
-            "Rates are quantity-weighted; tax/discount basis and units should be checked before acting.")
+            f"in PurchaseRate and {down} decreased; {new} have no prior history and {legacy} lack a recorded prior PurchaseRate. "
+            f"Reported tax totaled {money(summary.get('total_tax_amount'))} and discounts totaled {money(summary.get('total_discount_amount'))}. "
+            "PurchaseRate comparisons are quantity-weighted by item, unit and branch. Effective net rates (NetAmount / Quantity) are shown separately.")
 
 
 def render_html(summary):
@@ -44,29 +46,31 @@ def render_html(summary):
             name = escape(str(row['item']))
             unit = escape(str(row['unit']))
             branch = escape(str(row.get('branch') or 'All branches'))
-            basis = escape(str(row.get('amount_basis', '')))
-            old_basis = escape(str(row.get('previous_amount_basis') or '—'))
+            effective = money(row.get('current_effective_net_rate'))
+            old_effective = money(row.get('previous_effective_net_rate'))
             body += (f'<tr><td style="padding:9px;border-bottom:1px solid #eee">{name}<br><small>{unit} · {branch}</small></td>'
-                     f'<td>{money(row["current_rate"])}<br><small>{basis}</small></td><td>{money(row["previous_rate"])}<br><small>{old_basis}</small></td>'
+                     f'<td>{money(row["current_rate"])}</td><td>{money(row["previous_rate"])}</td>'
+                     f'<td>{effective}<br><small>Prior: {old_effective}<br>Δ {money(row.get("effective_absolute_difference"))} ({money(row.get("effective_percent_difference"))}%)</small></td>'
                      f'<td style="color:{shade}">{money(row["absolute_difference"])}<br>{money(change)}%</td>'
                      f'<td>{money(row["total_quantity"])}</td><td>{money(row["total_amount"])}</td></tr>')
         if not body:
-            body = '<tr><td colspan="6" style="padding:12px">No items in this category.</td></tr>'
+            body = '<tr><td colspan="7" style="padding:12px">No items in this category.</td></tr>'
         return (f'<h2 style="font-size:18px;margin-top:28px">{title}</h2>'
                 '<table width="100%" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-size:13px;text-align:left">'
-                '<tr style="background:#edf2f7"><th>Item / unit</th><th>Current rate</th><th>Previous rate</th><th>Change</th><th>Qty</th><th>Amount</th></tr>'
+                '<tr style="background:#edf2f7"><th>Item / unit</th><th>Current PurchaseRate<br>(qty-weighted)</th><th>Previous PurchaseRate</th><th>Effective net rate</th><th>PurchaseRate change</th><th>Qty</th><th>Amount</th></tr>'
                 + body + '</table>')
     return ('<!doctype html><html><body style="margin:0;background:#f2f4f7;font-family:Arial,sans-serif;color:#182230">'
             '<table width="100%" cellpadding="20"><tr><td align="center"><table width="860" style="max-width:100%;background:white;border-radius:12px" cellpadding="24"><tr><td>'
             f'<h1 style="color:#175cd3">Daily purchase dashboard</h1><p>{escape(summary["report_date"])}</p>'
             f'<table width="100%" cellpadding="14" style="background:#eff8ff"><tr><td>Total purchases<br><b>{money(summary["total_purchase_amount"])}</b></td>'
-            f'<td>Unique items<br><b>{summary["total_unique_items"]}</b></td><td>Purchase rows<br><b>{summary["total_rows"]}</b></td></tr></table>'
+            f'<td>Unique items<br><b>{summary["total_unique_items"]}</b></td><td>Transactions<br><b>{summary.get("total_transactions", 0)}</b></td><td>Purchase rows<br><b>{summary["total_rows"]}</b></td></tr></table>'
             f'<p style="line-height:1.6">{escape(insights(summary))}</p>'
             + table('Biggest rate increases', increases) + table('Biggest rate decreases', decreases)
-            + table('New items / no prior history', [r for r in items if r['previous_rate'] is None])
+            + table('New items / no prior history', [r for r in items if r.get('comparison_status') == 'new_item'])
+            + table('Legacy history missing PurchaseRate', [r for r in items if r.get('comparison_status') == 'legacy_rate_unavailable'])
             + table('Top purchases by total amount', sorted(items, key=lambda r: r['total_amount'], reverse=True))
             + '<p style="font-size:12px;color:#667085">Automated, data-derived narrative; no external AI service used. '
-              'Comparisons cover available local history only. Date-only prior records are weighted across the latest purchase day. '
+              'Comparisons cover available local history only. Date-only previous PurchaseRates are weighted across the latest purchase day. Legacy history without PurchaseRate is not treated as a PurchaseRate comparison. '
               'A missing percentage can mean no history or a zero previous rate. Figures use the export currency; returns and subtotal rows are excluded.</p>'
               '</td></tr></table></td></tr></table></body></html>')
 

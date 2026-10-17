@@ -19,7 +19,7 @@ from purchase_common import WorkflowError, job_lock, report_date, run_cli
 import login_test
 
 DAY = date(2026, 10, 17)
-HEADERS = ['Item Code', 'Item Name', 'Unit', 'Quantity', 'Net Amount', 'Gross Amount', 'Purchase Date', 'Branch']
+HEADERS = ['Item Code', 'Item Name', 'Unit', 'Quantity', 'Net Amount', 'Gross Amount', 'Purchase Date', 'Branch', 'PurchaseRate']
 
 
 def workbook(path, rows, headers=HEADERS, banner=True):
@@ -29,6 +29,10 @@ def workbook(path, rows, headers=HEADERS, banner=True):
         sheet.append(['Purchase report'])
     sheet.append(headers)
     for row in rows:
+        if headers == HEADERS and len(row) == 8:
+            row = list(row)
+            qty, amount = row[3], row[4] if row[4] is not None else row[5]
+            row.append(amount / qty if isinstance(qty, (int, float)) and qty > 0 and amount is not None else None)
         sheet.append(row)
     book.save(path)
     return path
@@ -82,18 +86,18 @@ class PipelineTests(unittest.TestCase):
 
     def test_latest_timestamp_not_average_entire_history(self):
         records = [dict(identity='code:a', item='Apple', unit='kg', branch='', quantity=1,
-                        amount=12, amount_basis='net', purchase_at='2026-10-17T00:00:00')]
-        history = [dict(records[0], amount=5, purchase_at='2026-10-15T08:00:00'),
-                   dict(records[0], amount=10, purchase_at='2026-10-15T14:00:00')]
+                        amount=12, purchase_rate=12, net_amount=12, amount_basis='net', purchase_at='2026-10-17T00:00:00')]
+        history = [dict(records[0], amount=5, purchase_rate=5, net_amount=5, purchase_at='2026-10-15T08:00:00'),
+                   dict(records[0], amount=10, purchase_rate=10, net_amount=10, purchase_at='2026-10-15T14:00:00')]
         result, _ = analysis.summarize(records, history, DAY, False)
         self.assertEqual(result['items'][0]['previous_rate'], 10)
 
     def test_overlapping_range_does_not_double_count_prior_history(self):
         # A current range export is authoritative for the dates it covers.
         row = dict(identity='code:a', item='Apple', unit='kg', branch='', quantity=1,
-                   amount=12, amount_basis='net', purchase_at='2026-10-17T00:00:00')
-        old = dict(row, amount=10, purchase_at='2026-10-15T00:00:00')
-        stale = dict(old, amount=1)
+                   amount=12, purchase_rate=12, net_amount=12, amount_basis='net', purchase_at='2026-10-17T00:00:00')
+        old = dict(row, amount=10, purchase_rate=10, net_amount=10, purchase_at='2026-10-15T00:00:00')
+        stale = dict(old, amount=1, purchase_rate=1, net_amount=1)
         summary, _ = analysis.summarize([row, old], [stale], DAY, False)
         self.assertEqual(summary['items'][0]['previous_rate'], 10)
 
@@ -156,9 +160,9 @@ class PipelineTests(unittest.TestCase):
             analysis.analyze(self.path, DAY, self.base)
 
     def test_zero_previous_rate_has_no_percentage(self):
-        row = dict(identity='a', item='A', unit='kg', branch='', quantity=1, amount=2,
+        row = dict(identity='a', item='A', unit='kg', branch='', quantity=1, amount=2, purchase_rate=2, net_amount=2,
                    amount_basis='net', purchase_at='2026-10-17T00:00:00')
-        summary, _ = analysis.summarize([row], [dict(row, amount=0, purchase_at='2026-10-16T00:00:00')], DAY, False)
+        summary, _ = analysis.summarize([row], [dict(row, amount=0, purchase_rate=0, net_amount=0, purchase_at='2026-10-16T00:00:00')], DAY, False)
         self.assertEqual(summary['items'][0]['absolute_difference'], 2)
         self.assertIsNone(summary['items'][0]['percent_difference'])
 

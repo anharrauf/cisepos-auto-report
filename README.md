@@ -31,7 +31,7 @@ Use the virtual environment interpreter in all commands. No display is required 
 
 ## One-time deployment configuration
 
-The login behavior works on the VPS, but the report's actual control selectors and Excel schema were not available during development. No live requests were made for this feature. Confirm the following manually before scheduling. The code refuses to guess missing controls and does not retry logins.
+The login behavior works on the VPS. The 14-column Excel layout is now confirmed; report-control CSS selectors still need one-time local discovery. No live requests were made for this feature. Confirm the following manually before scheduling. The code refuses to guess missing controls and does not retry logins.
 
 - Preserve `CISEPOS_USERNAME`, `CISEPOS_PASSWORD`, and any working login-selector overrides. Set `CISEPOS_SUCCESS_SELECTOR` to exactly one visible authenticated-only dashboard element. Login verification requires the exact `/public/dashboard` path plus that element.
 - Confirm CSS selectors for `CISEPOS_REPORT_START_SELECTOR`, `END_SELECTOR`, `TYPE_SELECTOR`, `GENERATE_SELECTOR`, `TABLE_SELECTOR`, `LENGTH_SELECTOR`, and `EXCEL_SELECTOR` (each prefixed `CISEPOS_REPORT_`). Use unique selectors; a table ID is ideal. Report selectors must be standard CSS because the redraw observer uses the same selectors in the DOM. No report controls have guessed defaults.
@@ -40,31 +40,61 @@ The login behavior works on the VPS, but the report's actual control selectors a
 - Generate must redraw the table, trigger a DataTables draw, or load a new document. The script waits for that signal and for any DataTables processing indicator to disappear; an old visible table alone is insufficient. After selecting All it waits again. For initialized DataTables it checks loaded row count against filtered record count and refuses known partial exports. Verify once that the resulting Excel covers all branches/items; custom server-side export implementations can need an adapter.
 - The Excel button must produce a real `.xlsx` download. Legacy `.xls`, HTML disguised as Excel, or a button that opens a new window instead of downloading are not supported. Such exports fail rather than being silently renamed.
 
-## Excel schema and calculations
+## Confirmed Purchasing workbook layout
 
-An `.xlsx` file is read by pandas/openpyxl. Header auto-detection scans the first 40 rows; `PURCHASE_HEADER_ROW` optionally supplies a zero-based row index. `PURCHASE_SHEET=0` selects the first sheet; a sheet name is also accepted. Column names are Unicode-normalized and matched to common headings. Ambiguity or malformed item data fails rather than producing misleading totals.
+Row 1 is a report banner (title, dates, branch, print timestamp). Row 2 contains the headings; `PURCHASE_HEADER_ROW=1` is the zero-based header index. `.env.example` now supplies the exact column map and enables `PURCHASE_BRANCH_AWARE=true`. Keep these settings when updating your existing `.env`.
 
-Configure `PURCHASE_COLUMN_MAP` when headings differ or there are multiple candidate columns. For example, in `.env`:
+| Exact heading | Canonical field |
+| --- | --- |
+| Purchase Type | purchase_type |
+| Transaction No | transaction_no |
+| Date | purchase_date |
+| Branch | branch |
+| BarCode | item_code |
+| Item | item |
+| Default Unit | unit |
+| Supplier | supplier |
+| Quantity | quantity |
+| PurchaseRate | purchase_rate |
+| GrossAmount | gross_amount |
+| TaxAmount | tax_amount |
+| Discount Amount | discount_amount |
+| NetAmount | net_amount |
 
-```dotenv
-PURCHASE_COLUMN_MAP='{"item_code":"SKU","item":"Product Name","unit":"UOM","quantity":"Qty","net_amount":"Final Amount","gross_amount":"Amount","purchase_date":"Invoice Date","branch":"Branch"}'
+`PURCHASE_SHEET=0` selects the first worksheet. All 14 headings are required for this CISEPOS layout. Numbers use decimal dots and optional comma thousands separators; native Excel dates, serial dates and day-first date text are supported. Preserve barcodes as text in the export where possible, including leading zeroes. No currency or unit conversion is inferred.
+
+### Item rows, transactions and history
+
+- Empty Item rows, transaction header rows and Total/subtotal rows are excluded from purchase-line amounts. Explicit transaction headers supply Transaction No, Purchase Type, Date and Branch to following item rows in that transaction. Totals end that metadata context; a different transaction number cannot inherit an earlier transaction's metadata. Missing required metadata fails validation.
+- Positive-quantity item rows must contain PurchaseRate and NetAmount. Returns and zero-quantity adjustments remain excluded. Transaction header invoice totals are never added to line totals.
+- Transaction identity is Purchase Type + Transaction No + Branch + date. The email counts distinct transactions separately from item rows. Repeated complete transaction blocks with identical lines are included once; conflicting copies stop analysis for review. Multiple identical legitimate item lines inside one transaction remain intact. Without an export line ID, identical adjacent flat lines cannot safely be classified as accidental duplicates; the tool does not guess by deleting item lines.
+- Item identity prefers BarCode, then Item name. Comparison keys also include Default Unit and Branch for this confirmed layout (disabling branch mode is rejected). No kg/box conversion or cross-branch price matching is performed. A branch's transaction number may be reused in another branch without being deduplicated.
+
+### PurchaseRate and effective net rate are separate
+
+The main rate-change fields (`current_purchase_rate`, `previous_purchase_rate`, `absolute_difference`, `percent_difference`) use the exported **PurchaseRate**, never NetAmount/Quantity or GrossAmount/Quantity. When an item has multiple purchases today, the displayed current PurchaseRate is quantity-weighted across today's lines. Previous PurchaseRate uses the most recent earlier available timestamp for the same item/unit/branch; if the export has dates only, ties on the latest purchase day are quantity-weighted. Daily volume totals still include all of today's positive purchase lines.
+
+Tax/discount-adjusted **effective net rate** is separately calculated as sum(NetAmount)/sum(Quantity), with `current_effective_net_rate`, `previous_effective_net_rate`, `effective_absolute_difference` and `effective_percent_difference`. The previous effective rate corresponds to the records selected for the previous PurchaseRate. The HTML email labels both measures and shows both changes. A prior zero rate has an absolute difference but no percentage.
+
+Generic older exports can still be analyzed with custom mappings; missing PurchaseRate is left unavailable rather than being inferred from amounts. The confirmed CISEPOS layout always requires the explicit rate and net amount. Total purchase amount uses NetAmount for the confirmed layout; generic exports may use gross when net is absent.
+
+History remains in `data/processed/YYYY-MM-DD/records.json`. Version 2 snapshots preserve each item's explicit PurchaseRate, NetAmount, transaction identity, unit, branch, quantity and timestamp. Existing historical dates are not modified when another day is analyzed; rerunning a date replaces that day's snapshot rather than appending duplicates. Earlier rows in a range workbook can supply history, and overlapping imports are not double-counted. Future records/snapshots do not influence a selected day.
+
+Legacy version 1 snapshots are retained, but amount-derived rates in them are **not** reinterpreted as PurchaseRate. The comparison searches for the latest earlier record with a real PurchaseRate; if none exists, the email marks legacy rate history as unavailable. Reanalyze the original historical XLSX files using the new confirmed mapping to populate actual rates. New items and legacy rate-unavailable items are shown separately. Back up history and keep item/unit/branch mappings consistent across dates.
+
+## One-time safe selector discovery on the Windows VPS
+
+Run locally in an interactive desktop/RDP session (not from Codex or Task Scheduler):
+
+```powershell
+.\discover_purchase_selectors.ps1
 ```
 
-Canonical fields: `item_code`, `item`, `unit`, `quantity`, `net_amount`, `gross_amount`, `purchase_date`, `branch`, `row_type`. Map only fields present in your export. A unique item code is preferred; item name is the fallback identity. Confirm that amounts are **item-line totals**, not repeated invoice-level totals, and that the workbook uses one currency. Currency symbols are not guessed or converted. Numbers use decimal dots and optional comma thousands separators. Dates are interpreted day-first; native Excel dates and Excel serial dates are supported.
+The wrapper uses `.venv\Scripts\python.exe`; you can also run `.\.venv\Scripts\python.exe discover_purchase_selectors.py`. It opens an ephemeral headed Chromium session and asks you to log in **manually in the browser**. It never loads credentials from `.env`, fills login fields or stores browser state. Navigate manually to the purchase-report page and generate the report once yourself so the table and Excel control are visible. Press Enter in the PowerShell window only when ready.
 
-A unit column is required unless `PURCHASE_DEFAULT_UNIT` explicitly supplies the one unit used by every row. Units are normalized for case/spacing, but no kg/gram/box conversion is attempted. `PURCHASE_BRANCH_AWARE=true` additionally keys comparisons by branch and requires a branch column; otherwise quantities and amounts across branches are combined.
+The script then prompts you to click exactly seven controls: Start Date, End Date, Report Type, Generate Report, Show Entries, the table, and Excel. While picking, a transparent overlay receives mouse clicks instead of the controls underneath; capture handlers additionally suppress pointer/form/button actions and keyboard activation. The script does not generate/export reports, inspect field/option values, read labels/text/HTML/table records, collect DOM attributes or take screenshots. It computes only standard HTML tag paths and sibling positions; candidate output is validated against a strict structural-selector grammar so IDs/names/tokens cannot appear in the output. Browser-debug modes are disabled. The browser and session close afterward.
 
-For each item/unit (and optional branch):
-
-1. Exclude subtotal/total rows, empty rows, and nonpositive quantities/returns. An item with malformed quantity or amount fails validation. Adjustments and returns are not included in positive purchase totals.
-2. Prefer the row's final/net amount, including zero. Use gross amount only when net is absent. The selected basis is recorded in outputs and the email; compare differing net/gross bases with care.
-3. Current rate = sum of selected amounts / sum of positive quantities on the requested report date. Current totals are quantity-weighted, not an average of rates.
-4. Find the latest earlier locally available purchase timestamp for the same comparison key. When only dates exist, use the weighted rate of all rows on the latest purchase day. A date gap does not prevent comparison. A zero prior rate has an absolute difference but no percentage.
-5. Emit current/previous rates, prior timestamp, absolute/percent differences, total quantity/amount and item-line row count. `total_rows` is **item-level purchase rows**, not distinct invoices.
-
-History comes from earlier `data/processed/YYYY-MM-DD/records.json` snapshots and earlier dated rows in the current workbook. Overlapping imports are not double-counted. Only the requested day's rows are saved in its snapshot. Future snapshots/rows never influence comparisons. Re-running a date replaces its analysis snapshot; it does not append duplicates. If a workbook lacks a purchase-date column, all its rows are assigned the requested date; use only single-day exports in that case.
-
-This system cannot infer unseen CISEPOS history. Bootstrap it by analyzing historical downloads in chronological order. The first known purchase is shown as “no prior comparison,” not a zero rate. Preserve and back up normalized history on the VPS. Do not change item codes, unit mappings or branch mode mid-history without rebuilding affected snapshots.
+Seven candidates are saved locally to ignored `selector_candidates.env`. These are positional candidates, not stable application IDs: reopen the report in a fresh manual session and confirm each resolves to the intended single control before copying into `.env`. Dynamic page layouts can require different selectors. Do not copy credentials or purchasing data into the candidate file or share page dumps. Discovery is designed for native date/select controls as documented above; unsupported custom widgets require an adapter.
 
 ## Run each component
 
@@ -159,6 +189,6 @@ Only fixed stage labels/status messages are printed. Feature CLI wrappers suppre
 .\.venv\Scripts\python.exe -m py_compile login_test.py purchase_common.py download_purchase_report.py analyze_purchase_report.py send_purchase_email.py run_daily_purchase_report.py
 ```
 
-Tests generate synthetic workbooks, intercept browser requests and mock SMTP. They cover login regression, dd-mm-yyyy dates, report type selection, redraw waiting, All entries, validated XLSX download, historical rate calculation, tax/discount/net preference, totals/returns exclusion, units/branches, missing history, escaped HTML/CSV, delivery journals and dry-run isolation. No test requires CISEPOS or SMTP credentials. `CISEPOS_CHROMIUM_PATH` can select a system Chromium for offline tests. CI is configured to run the suite on Windows Server 2022/Python 3.13 and Ubuntu.
+Tests generate synthetic workbooks, intercept browser requests and mock SMTP. They cover login regression, dd-mm-yyyy dates, report type selection, redraw waiting, All entries, validated XLSX download, historical rate calculation, separate PurchaseRate/net-rate calculations, transaction deduplication, selector-discovery safety, totals/returns exclusion, units/branches, missing history, escaped HTML/CSV, delivery journals and dry-run isolation. No test requires CISEPOS or SMTP credentials. `CISEPOS_CHROMIUM_PATH` can select a system Chromium for offline tests. CI is configured to run the suite on Windows Server 2022/Python 3.13 and Ubuntu.
 
-Development validation: all 51 offline tests passed on Linux Chromium, syntax compilation and Git whitespace checks passed, and a synthetic command-line dry run produced CSV/JSON/HTML without a delivery journal; live report selectors, the actual export schema, SMTP delivery and execution on your Windows VPS still require a one-time deployment check. Keep `.env`, credentials, virtual environments, raw/processed business data and ZIP artifacts out of source control.
+Current schema/discovery validation: all 64 offline tests passed locally on Linux Chromium, syntax compilation and Git whitespace checks passed, and a synthetic command-line dry run produced CSV/JSON/HTML without a delivery journal; live report selectors, a real workbook import, SMTP delivery and execution on your Windows VPS still require a one-time deployment check. Keep `.env`, credentials, virtual environments, raw/processed business data and ZIP artifacts out of source control.

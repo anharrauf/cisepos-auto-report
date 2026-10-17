@@ -25,3 +25,11 @@ jobs:
       - if: runner.os == 'Windows'
         run: python -m playwright install chromium
       - run: python -m unittest discover -v
+      - name: Validate discovery PowerShell syntax without execution
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $PurchaseTokens = $null
+          $PurchaseParseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'discover_purchase_selectors.ps1'), [ref]$PurchaseTokens, [ref]$PurchaseParseErrors) | Out-Null
+          if ($PurchaseParseErrors.Count -gt 0) { throw 'Discovery PowerShell syntax validation failed.' }
