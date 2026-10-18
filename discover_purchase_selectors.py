@@ -89,16 +89,20 @@ def discovery_stage(name):
 
 
 # Readiness returns booleans only. It classifies the report controls using known
-# captions/labels and semantic field identifiers; it never reads input values,
+# captions/labels and semantic field identifiers; it never reads editable input values,
 # options, table cells or page HTML, or returns those attributes/captions to Python.
 READINESS_HELPERS = r"""
     const norm = s => (s || '').toLowerCase().replace(/[\s_:\-*]+/g, '');
     const visible = e => !!e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden';
-    const caption = root => [...root.childNodes].map(n => {
+    const caption = root => {
+        // A submit/button value is its non-editable caption, never a login field.
+        if (root.tagName === 'INPUT') return ['submit','button'].includes(root.type) ? (root.getAttribute('value') || '') : '';
+        return [...root.childNodes].map(n => {
         if (n.nodeType === Node.TEXT_NODE) return n.textContent;
         if (n.nodeType !== Node.ELEMENT_NODE || ['INPUT','SELECT','TEXTAREA','TABLE','SCRIPT','STYLE'].includes(n.tagName)) return '';
         return caption(n);
-    }).join(' ').slice(0,160);
+        }).join(' ').slice(0,160);
+    };
     const captions = e => [e.id, e.name, e.getAttribute('aria-label'), e.getAttribute('placeholder'),
         ...[...(e.labels || [])].map(caption),
         ...[...(e.parentElement?.querySelectorAll('input:not([type=hidden]),select').length === 1 ? e.parentElement.querySelectorAll(':scope > label') : [])].map(caption)].map(norm);

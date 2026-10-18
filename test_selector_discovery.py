@@ -98,7 +98,7 @@ class DiscoveryTests(unittest.TestCase):
             self.assertFalse(page.evaluate('Boolean(window.exported)'))
             self.assertNotIn('PRIVATE',str(result))
 
-    def fixture_session(self, context, *, finish_login=True, report_status=200, expire=False, show_form=True):
+    def fixture_session(self, context, *, finish_login=True, report_status=200, expire=False, show_form=True, native_button=False):
         requests, cookies = [], []
         form = """<form id=form style="display:none" onsubmit="window.generated=true;return false">
         <label for=f1>Start Date *</label><input id=f1 value=PRIVATE_VALUE>
@@ -106,6 +106,8 @@ class DiscoveryTests(unittest.TestCase):
         <label>Report Type <select><option>PRIVATE_OPTION</option></select></label>
         <button type=submit>Generate Report</button></form>
         <script>setTimeout(()=>{document.querySelector('#form').style.display='block';window.ready=true},250)</script>"""
+        if native_button:
+            form = form.replace('<button type=submit>Generate Report</button>', '<input type=submit name=submit value="Generate Report">')
         def route_handler(route):
             url = route.request.url
             requests.append(url)
@@ -131,7 +133,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_manual_dashboard_detection_auto_navigation_same_session_and_form_wait(self):
         with self.browser.new_context() as context:
             context.set_offline(True)
-            requests,cookies = self.fixture_session(context)
+            requests,cookies = self.fixture_session(context,native_button=True)
             page = context.new_page()
             capture = io.StringIO()
             # This only simulates completion of manual login on a local fixture.
